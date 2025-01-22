@@ -1,0 +1,1 @@
+python3 /home/ad/als/src/main.py /home/ad/als/76193_1196263_M-34-5-C-b-4-4-3-4.laz
