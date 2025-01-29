@@ -16,23 +16,24 @@ import open3d
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-def classify(las):
-    ground_points = las.points[las.classification == 2]
-    vegetation_low = las.points[las.classification == 3]
-    vegetation_medium = las.points[las.classification == 4]
-    vegetation_high = las.points[las.classification == 5]
-    buildings = las.points[las.classification == 6]
-    water = las.points[las.classification == 9]
-    
-    classified = {
-        "ground": ground_points,
-        "low vegetation": vegetation_low,
-        "medium vegetation": vegetation_medium,
-        "high vegetation": vegetation_high,
-        "building": buildings,
-        "water": water
-    }
-    return classified
+def classify_points(las, class_ids):
+    return {name: las.points[las.classification == cid] for name, cid in class_ids.items()}
+
+def visualize_data(classified, colors_map):
+    plt.bar(classified.keys(), [len(c) for c in classified.values()], color="red")
+    plt.title("Liczba punktów w poszczególnych klasach")
+    plt.xlabel("Klasy")
+    plt.ylabel("Liczba punktów")
+    plt.show()
+
+    points = np.vstack([np.vstack((cls.x, cls.y, cls.z)).T for cls in classified.values()])
+    classifications = np.hstack([cls.classification for cls in classified.values()])
+    point_colors = np.array([mcolors.hex2color(colors_map[c]) for c in classifications])
+
+    cloud = open3d.geometry.PointCloud()
+    cloud.points = open3d.utility.Vector3dVector(points)
+    cloud.colors = open3d.utility.Vector3dVector(point_colors)
+    open3d.visualization.draw_geometries([cloud])
 
 def main():
     parser = argparse.ArgumentParser(description="Klasyfikacja.")
@@ -40,41 +41,24 @@ def main():
     args = parser.parse_args()
 
     las = laspy.read(args.file_path)
-    x, y, z = las.x, las.y, las.z
-    points = np.vstack((x, y, z)).T
 
-    classified = classify(las)
-
-    plt.bar(classified.keys(), [len(classy) for classy in classified.values()], color="red")
-    plt.title("Liczba punktów w poszczególnych klasach")
-    plt.xlabel("Klasy")
-    plt.ylabel("Liczba punktów")
-    plt.show()
-
-    class_colors_map = {
-        2: 'red',
-        3: 'green',
-        4: 'blue',
-        5: 'black',
-        6: 'white',
-        9: 'yellow',
+    class_ids = {
+        "ground": 2,
+        "low vegetation": 3,
+        "medium vegetation": 4,
+        "high vegetation": 5,
+        "building": 6,
+    }
+    colors_map = {
+        2: '#aa5500',
+        3: '#00aaaa',
+        4: '#55ff55',
+        5: '#00aa00',
+        6: '#ff5555',
     }
 
-    points_from_chosen_classes = []
-    for record in classified.values():
-        points = np.vstack((record.x, record.y, record.z)).T
-        points_from_chosen_classes.append(points)
-
-    points_from_chosen_classes = np.vstack(points_from_chosen_classes)
-    all_classifications = np.hstack([record.classification for record in classified.values()])
-    point_colors = np.array([class_colors_map[classy] for classy in all_classifications])
-    
-    cloud = open3d.geometry.PointCloud()
-    cloud.points = open3d.utility.Vector3dVector(points_from_chosen_classes)
-    rgb_colors = np.array([mcolors.to_rgb(color) for color in point_colors])
-    cloud.colors = open3d.utility.Vector3dVector(rgb_colors)
-    
-    open3d.visualization.draw_geometries([cloud])
+    classified = classify_points(las, class_ids)
+    visualize_data(classified, colors_map)
 
 if __name__ == "__main__":
     main()

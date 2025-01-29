@@ -20,33 +20,37 @@ obrysów na tle danych BDOT. Wizualizację wykonać w wybranym środowisku GIS n
 podstawie danych wygenerowanych skryptem
 '''
 
+import os
 import argparse
-import laspy
 import numpy as np
+import laspy
 import open3d
-import open3d.visualization
 from sklearn.cluster import DBSCAN
-from scipy.spatial import ConvexHull
 import geopandas as gpd
 from shapely.geometry import Polygon
+from scipy.spatial import ConvexHull
+import pandas as pd
 
 def point_extraction_based_on_the_class(las, class_type):
     if class_type == 'buildings':
-        buildings_points = las.points[las.classification == 6]
-        return buildings_points
+        return las.points[las.classification == 6]
     elif class_type == 'vegetation':
-        vegetation_points = las.points[np.isin(las.classification, [3, 4, 5])]
-        return vegetation_points
+        return las.points[np.isin(las.classification, [3, 4, 5])]
     else:
-        ground_points = las.points[las.classification == 2]
-        return ground_points
+        return las.points[las.classification == 2]
 
 def main():
     parser = argparse.ArgumentParser(description="Klasteryzacja budynków.")
     parser.add_argument("file_path", type=str, help="Ścieżka do pliku LAS/LAZ.")
+    parser.add_argument("out_folder", type=str, help="Ścieżka do folderu wyjściowego.")
+    parser.add_argument("eps", type=float, help="Maksymalna odległość między dwoma próbkami, aby były uznane za sąsiednie.")
+    parser.add_argument("min_samples", type=int, help="Minimalna liczba punktów w sąsiedztwie punktu, aby uznać go za rdzeniowy.")
     args = parser.parse_args()
 
     las = laspy.read(args.file_path)
+
+    if not os.path.exists(args.out_folder):
+        os.makedirs(args.out_folder)
     
     ground_points = point_extraction_based_on_the_class(las, 'ground')
     ground_points = np.vstack((ground_points.x, ground_points.y, ground_points.z)).T
@@ -54,7 +58,7 @@ def main():
     buildings_points = point_extraction_based_on_the_class(las, 'buildings')
     buildings_points = np.vstack((buildings_points.x, buildings_points.y, buildings_points.z)).T
     
-    clustering = DBSCAN(eps=3.5, min_samples=35).fit(buildings_points)
+    clustering = DBSCAN(eps=args.eps, min_samples=args.min_samples).fit(buildings_points)
     labels = clustering.labels_
     max_label_buildings = labels.max()
 
@@ -72,7 +76,7 @@ def main():
     ground_cloud.points = open3d.utility.Vector3dVector(ground_points)
     ground_cloud.paint_uniform_color([0.5, 0.5, 0.5])
 
-    # open3d.visualization.draw_geometries([bds_cloud, ground_cloud])
+    open3d.visualization.draw_geometries([bds_cloud, ground_cloud])
 
     gdf = gpd.GeoDataFrame(columns=["geometry", "pole", "objetosc"], crs="EPSG:2180")
     for i in range (max_label_buildings + 1):
@@ -87,9 +91,10 @@ def main():
         area = hull2d.volume
 
         polygon = Polygon(hull2d.points[hull2d.vertices])
-        gdf = gdf._append({"geometry": polygon, "pole": area, "objetosc": volume}, ignore_index=True)
+        new_row = gpd.GeoDataFrame([{"geometry": polygon, "pole": area, "objetosc": volume}], crs="EPSG:2180")
+        gdf = pd.concat([gdf, new_row], ignore_index=True)
 
-    gdf.to_file("out/buildings.shp")
+    gdf.to_file(f"{args.out_folder}/buildings.shp")
 
 if __name__ == "__main__":
     main()

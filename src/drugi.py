@@ -21,21 +21,21 @@ from scipy.spatial import KDTree
 def main():
     parser = argparse.ArgumentParser(description="Gęstość punktów.")
     parser.add_argument("file_path", type=str, help="Ścieżka do pliku LAS/LAZ.")
-    parser.add_argument("-d", "--density", choices=["2d", "3d"], help="Tryb wyznaczania gęstości: 2d (default) lub 3d.")
+    parser.add_argument("-d", "--density", choices=["2d", "2D", "3d", "3D"], default="2D", help="Tryb wyznaczania gęstości: 2d (default) lub 3d.")
     parser.add_argument("-g", "--ground-only", action="store_true", help="Jeśli ustawiona, analiza będzie dotyczyła tylko klasy gruntu. Domyślnie analizowana jest cała chmura.")
 
     args = parser.parse_args()
 
     las = laspy.read(args.file_path)
-    x, y, z = las.x, las.y, las.z
 
-    if args.density == "3d":
-        points = np.vstack((x, y, z)).T
-
-    points = np.vstack((x, y)).T
+    if args.density.lower() == "3d":
+        points = np.vstack((las.x, las.y, las.z)).T
+    else:
+        points = np.vstack((las.x, las.y)).T
 
     if args.ground_only:
-        points = points[las.classification == 2]
+        ground_mask = (las.classification == 2)
+        points = points[ground_mask]
 
     tree = KDTree(points)
 
@@ -43,12 +43,13 @@ def main():
     for point in points:
         indices = tree.query_ball_point(point, r=1)
         densities.append(len(indices) - 1)
-    
+
     densities = np.array(densities)
+
     sns.histplot(densities, bins=50, kde=True)
-    plt.title("Rozkład gęstości punktów")
-    plt.xlabel("Liczba punktów")
-    plt.ylabel("Liczba sąsiadów")
+    plt.title("Density (r=1)")
+    plt.xlabel("Density")
+    plt.ylabel("Count")
     plt.show()
 
 if __name__ == "__main__":

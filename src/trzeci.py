@@ -17,83 +17,67 @@ import rasterio
 from rasterio.transform import from_origin
 from rasterio.crs import CRS
 import os
+import logging
 
-def point_extraction_based_on_the_class(las, class_type):
-    if class_type == 'buildings':
-        buildings_points = las.points[las.classification == 6]
-        return buildings_points
-    elif class_type == 'vegetation':
-        vegetation_points = las.points[np.isin(las.classification, [3, 4, 5])]
-        return vegetation_points
-    else:
-        ground_points = las.points[las.classification == 2]
-        return ground_points
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-def nmt(las, output_path):
-    ground_points = point_extraction_based_on_the_class(las, 'ground')
+def extract_points_by_class(las, class_type):
+    class_map = {
+        'buildings': 6,
+        'ground': 2,
+        'vegetation': [3, 4, 5]
+    }
+    if class_type not in class_map:
+        raise ValueError(f"Nieznana klasa: {class_type}")
+    mask = np.isin(las.classification, class_map[class_type])
+    return las.points[mask]
 
-    x, y, z = ground_points.x, ground_points.y, ground_points.z
-
-    resolution = 1
+def generate_raster(x, y, z, resolution, crs, output_path):
     grid_x, grid_y = np.mgrid[x.min():x.max():resolution, y.min():y.max():resolution]
     grid_z = griddata((x, y), z, (grid_x, grid_y), method='linear')
-
+    grid_z_rotated = np.rot90(grid_z, k=1)
     transform = from_origin(x.min(), y.max(), resolution, resolution)
     
     with rasterio.open(
         output_path,
         "w",
         driver="GTiff",
-        height=grid_z.shape[0],
-        width=grid_z.shape[1],
+        height=grid_z_rotated.shape[0],
+        width=grid_z_rotated.shape[1],
         count=1,
-        dtype=grid_z.dtype,
-        crs=CRS.from_string("EPSG:2180"),
+        dtype=grid_z_rotated.dtype,
+        crs=crs,
         transform=transform,
         nodata=-9999,
     ) as dst:
-        dst.write(grid_z, 1)
+        dst.write(grid_z_rotated, 1)
 
-def nmpt(las, output_path):
-    ground_points = point_extraction_based_on_the_class(las, 'ground')
-    buildings_points = point_extraction_based_on_the_class(las, 'buildings')
-    vegetation_points = point_extraction_based_on_the_class(las, 'vegetation')
+def process_nmt(las, output_path, resolution, crs):
+    ground_points = extract_points_by_class(las, 'ground')
+    generate_raster(ground_points.x, ground_points.y, ground_points.z, resolution, crs, output_path)
+    logging.info(f"Wygenerowano NMT: {output_path}")
 
-    x, y, z = ground_points.x, ground_points.y, ground_points.z
-    x_buildings, y_buildings, z_buildings = buildings_points.x, buildings_points.y, buildings_points.z
-    x_vegetation, y_vegetation, z_vegetation = vegetation_points.x, vegetation_points.y, vegetation_points.z
+def process_nmpt(las, output_path, resolution, crs):
+    ground_points = extract_points_by_class(las, 'ground')
+    buildings_points = extract_points_by_class(las, 'buildings')
+    vegetation_points = extract_points_by_class(las, 'vegetation')
 
-    resolution = 0.1
-    grid_x, grid_y = np.mgrid[x.min():x.max():resolution, y.min():y.max():resolution]
-    grid_z = griddata((x, y), z, (grid_x, grid_y), method='linear')
-    grid_z_buildings = griddata((x_buildings, y_buildings), z_buildings, (grid_x, grid_y), method='linear')
-    grid_z_vegetation = griddata((x_vegetation, y_vegetation), z_vegetation, (grid_x, grid_y), method='linear')
+    x = np.concatenate((ground_points.x, buildings_points.x, vegetation_points.x))
+    y = np.concatenate((ground_points.y, buildings_points.y, vegetation_points.y))
+    z = np.concatenate((ground_points.z, buildings_points.z, vegetation_points.z))
 
-    grid_z = np.maximum(grid_z, grid_z_buildings, grid_z_vegetation)
-    transform = from_origin(x.min(), y.max(), resolution, resolution)
+    generate_raster(x, y, z, resolution, crs, output_path)
+    logging.info(f"Wygenerowano raster NMPT: {output_path}")
 
-    with rasterio.open(
-        output_path,
-        "w",
-        driver="GTiff",
-        height=grid_z.shape[0],
-        width=grid_z.shape[1],
-        count=1,
-        dtype=grid_z.dtype,
-        crs=CRS.from_string("EPSG:2180"),
-        transform=transform,
-        nodata=-9999,
-    ) as dst:
-        dst.write(grid_z, 1)
+def calculate_difference_raster(first_raster_path, second_raster_path, output_path):
+    with rasterio.open(first_raster_path) as first_raster:
+        first_data = first_raster.read(1)
+        transform = first_raster.transform
 
-def difference_raster(nmpt_first_path, nmpt_second_path, output_path):
-    with rasterio.open(nmpt_first_path) as nmpt_first:
-        nmpt_first_data = nmpt_first.read(1)
-    with rasterio.open(nmpt_second_path) as nmpt_second:
-        nmpt_second_data = nmpt_second.read(1)
+    with rasterio.open(second_raster_path) as second_raster:
+        second_data = second_raster.read(1)
 
-    difference = nmpt_second_data - nmpt_first_data
-    transform = nmpt_first.transform
+    difference = second_data - first_data
 
     with rasterio.open(
         output_path,
@@ -103,35 +87,44 @@ def difference_raster(nmpt_first_path, nmpt_second_path, output_path):
         width=difference.shape[1],
         count=1,
         dtype=difference.dtype,
-        crs=CRS.from_string("EPSG:2180"),
+        crs=first_raster.crs,
         transform=transform,
         nodata=-9999,
     ) as dst:
         dst.write(difference, 1)
 
+    logging.info(f"Wygenerowano różnicowy raster: {output_path}")
+
 def main():
-    parser = argparse.ArgumentParser(description="NMPT.")
+    parser = argparse.ArgumentParser(description="Generowanie NMT, NMPT i obliczanie różnic.")
     parser.add_argument("first_las", type=str, help="Ścieżka do pliku LAS/LAZ.")
     parser.add_argument("second_las", type=str, help="Ścieżka do pliku LAS/LAZ.")
+    parser.add_argument("out_folder", type=str, help="Ścieżka do folderu wynikowego.")
+    parser.add_argument("-r", "--resolution", type=float, default=5.0, help="Rozdzielczość rastrów.")
+    parser.add_argument("-c", "--crs", type=int, default=2180, help="Układ współrzędnych (CRS).")
     args = parser.parse_args()
 
+    os.makedirs(args.out_folder, exist_ok=True)
+
+    crs = CRS.from_epsg(args.crs)
     first_las = laspy.read(args.first_las)
-    nmt_first_path = 'tifs/nmt_first.tif'
-    nmpt_first_path = 'tifs/nmpt_first.tif'
-    nmt(first_las, nmt_first_path)
-    nmpt(first_las, nmpt_first_path)
-
     second_las = laspy.read(args.second_las)
-    nmt_second_path = 'tifs/nmt_second.tif'
-    nmpt_second_path = 'tifs/nmpt_second.tif'
-    nmt(second_las, nmt_second_path)
-    nmpt(second_las, nmpt_second_path)
 
-    difference_nmpt_path = 'tifs/difference_nmpt.tif'
-    difference_raster(nmpt_first_path, nmpt_second_path, difference_nmpt_path)
+    process_nmt(first_las, os.path.join(args.out_folder, "nmt_first.tif"), args.resolution, crs)
+    process_nmpt(first_las, os.path.join(args.out_folder, "nmpt_first.tif"), args.resolution, crs)
+    process_nmt(second_las, os.path.join(args.out_folder, "nmt_second.tif"), args.resolution, crs)
+    process_nmpt(second_las, os.path.join(args.out_folder, "nmpt_second.tif"), args.resolution, crs)
 
-    difference_nmt_path = 'tifs/difference_nmt.tif'
-    difference_raster(nmt_first_path, nmt_second_path, difference_nmt_path)
+    calculate_difference_raster(
+        os.path.join(args.out_folder, "nmpt_first.tif"),
+        os.path.join(args.out_folder, "nmpt_second.tif"),
+        os.path.join(args.out_folder, "difference_nmpt.tif")
+    )
+    calculate_difference_raster(
+        os.path.join(args.out_folder, "nmt_first.tif"),
+        os.path.join(args.out_folder, "nmt_second.tif"),
+        os.path.join(args.out_folder, "difference_nmt.tif")
+    )
 
 if __name__ == "__main__":
     main()
